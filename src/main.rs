@@ -16,9 +16,10 @@ mod utils;
 use app::App;
 
 fn main() {
-    // Initialize logging with info level
+    // Initialize logging with info level, suppress tao windowing warnings
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
+        .filter_module("tao::platform_impl::platform::event_loop", log::LevelFilter::Error)
         .init();
 
     // Launch the Dioxus desktop app
