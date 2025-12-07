@@ -1,5 +1,5 @@
 use crate::components::{OutputPanel, SearchPanel, SettingsPanel, StatusBar};
-use crate::models::{AppState, SearchResult};
+use crate::models::{AppState, PlatformSearchResults, SearchContext};
 use crate::services::SettingsService;
 use dioxus::prelude::*;
 
@@ -10,7 +10,8 @@ pub fn App(cx: Scope<AppProps>) -> Element {
     // Initialize app state
     let app_state = use_state(cx, || AppState::default());
     let current_view = use_state(cx, || "search");
-    let search_results = use_state(cx, || Vec::<SearchResult>::new());
+    let search_results = use_state(cx, || Vec::<PlatformSearchResults>::new());
+    let search_context = use_state(cx, || None::<SearchContext>);
     let is_searching = use_state(cx, || false);
     let status_message = use_state(cx, || String::new());
 
@@ -30,7 +31,7 @@ pub fn App(cx: Scope<AppProps>) -> Element {
             class: "app-container",
             "data-theme": "{app_state.settings.appearance.theme}",
             style: "--accent-color: {app_state.settings.appearance.accent_color}",
-            
+
             // Header with navigation
             header {
                 class: "app-header",
@@ -62,6 +63,7 @@ pub fn App(cx: Scope<AppProps>) -> Element {
                                 SearchPanel {
                                     app_state: app_state.clone(),
                                     search_results: search_results.clone(),
+                                    search_context: search_context.clone(),
                                     is_searching: is_searching.clone(),
                                     status_message: status_message.clone(),
                                 }
@@ -71,6 +73,7 @@ pub fn App(cx: Scope<AppProps>) -> Element {
                                 OutputPanel {
                                     search_results: search_results.clone(),
                                     app_state: app_state.clone(),
+                                    search_context: search_context.clone(),
                                     status_message: status_message.clone(),
                                 }
                             }

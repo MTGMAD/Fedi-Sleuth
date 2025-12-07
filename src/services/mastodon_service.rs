@@ -1,8 +1,7 @@
 // ============================================================================
-// Pixelfed Service - Pixelfed API Implementation
+// Mastodon Service - Mastodon API implementation
 // ============================================================================
-// Implements the SocialPlatform trait for Pixelfed instances.
-// Uses OAuth 2.0 for authentication and Mastodon-compatible API endpoints.
+// Mirrors the SocialPlatform trait using Mastodon's REST API.
 // ============================================================================
 
 use anyhow::Result;
@@ -13,26 +12,22 @@ use reqwest::Client;
 use crate::models::{AppSettings, PixelfedPost, Platform, SearchResult};
 use crate::services::SocialPlatform;
 
-pub struct PixelfedService {
+pub struct MastodonService {
     client: Client,
     instance_url: String,
     access_token: Option<String>,
     enabled: bool,
 }
 
-impl PixelfedService {
+impl MastodonService {
     pub fn new(settings: &AppSettings) -> Self {
-        let platform_auth = &settings.api.pixelfed;
-        let trimmed_instance = platform_auth.instance_url.trim();
+        let platform_auth = &settings.api.mastodon;
+        let trimmed = platform_auth.instance_url.trim();
 
-        let normalized_url = if trimmed_instance.starts_with("http://")
-            || trimmed_instance.starts_with("https://")
-        {
-            trimmed_instance.trim_end_matches('/').to_string()
+        let normalized_url = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            trimmed.trim_end_matches('/').to_string()
         } else {
-            // Default to https if no scheme provided
-            // Store without trailing slash to keep API URLs consistent
-            format!("https://{}", trimmed_instance.trim_end_matches('/'))
+            format!("https://{}", trimmed.trim_end_matches('/'))
         };
 
         let client = Client::builder()
@@ -60,23 +55,27 @@ impl PixelfedService {
             })
     }
 
-    fn fallback_post_url(&self, post_id: &str) -> String {
-        let domain = self
-            .instance_url
-            .trim_start_matches("https://")
-            .trim_start_matches("http://");
+    fn fallback_post_url(&self, post: &PixelfedPost) -> String {
+        let base = self.instance_url.trim_end_matches('/');
+        let username = post
+            .account
+            .username
+            .as_deref()
+            .map(|value| value.trim_start_matches('@'))
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown");
 
-        format!("https://{}/p/{}", domain, post_id)
+        format!("{}/@{}/{}", base, username, post.id)
     }
 
-    fn account_display_name(post: &PixelfedPost) -> String {
+    fn account_name(post: &PixelfedPost) -> String {
         post.account
-            .username
+            .display_name
             .as_deref()
             .filter(|value| !value.is_empty())
             .or_else(|| {
                 post.account
-                    .display_name
+                    .username
                     .as_deref()
                     .filter(|value| !value.is_empty())
             })
@@ -89,7 +88,7 @@ impl PixelfedService {
         let mut types = Vec::new();
 
         for attachment in &post.media_attachments {
-            if let Some(url) = attachment.url.as_ref() {
+            if let Some(url) = attachment.url.as_deref() {
                 let trimmed = url.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -120,12 +119,12 @@ impl PixelfedService {
         );
 
         log::info!(
-            "Searching for user '{}' at: {} (this may take a moment for federated lookups...)",
+            "Searching for Mastodon user '{}' via {}",
             search_query,
             search_url
         );
 
-        let search_response = self
+        let response = self
             .client
             .get(&search_url)
             .header("Authorization", format!("Bearer {}", access_token))
@@ -133,53 +132,40 @@ impl PixelfedService {
             .send()
             .await?;
 
-        if !search_response.status().is_success() {
-            let status = search_response.status();
-            let body = search_response.text().await.unwrap_or_default();
-
-            let helpful_msg = if search_query.contains("@mastodon.")
-                || search_query.contains("@fosstodon.")
-            {
-                "\n\nNote: Pixelfed instances may have limited federation with Mastodon instances. Try: 1) Searching on a Mastodon instance instead, or 2) Searching for Pixelfed users only (e.g., from pixelfed.social, pix.art, etc.)"
-            } else {
-                ""
-            };
-
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
-				"User search failed: {}. Response: {}. User '{}' may not exist or instance may not be federated.{}",
-				status,
-				body,
-				search_query,
-				helpful_msg
-			));
+                "User search failed: {}. Response: {}. User '{}' may not exist or is unreachable.",
+                status,
+                body,
+                search_query
+            ));
         }
 
-        let search_data: serde_json::Value = search_response.json().await?;
-        let accounts = search_data["accounts"]
+        let data: serde_json::Value = response.json().await?;
+        let accounts = data["accounts"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Invalid search response"))?;
 
         if accounts.is_empty() {
             return Err(anyhow::anyhow!(
-				"User '{}' not found. If this is a remote user, their instance may not be federated with {}. Try searching for them directly on their home instance.",
-				search_query,
-				self.instance_url
-			));
+                "User '{}' not found on {}. Try searching directly on their home instance.",
+                search_query,
+                self.instance_url
+            ));
         }
 
         let user_id = accounts[0]["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid user data"))?;
 
-        self.fetch_timeline(
-            &format!(
-                "{}/api/v1/accounts/{}/statuses?limit=40",
-                self.instance_url, user_id
-            ),
-            cutoff_date,
-            Some(access_token),
-        )
-        .await
+        let timeline_url = format!(
+            "{}/api/v1/accounts/{}/statuses?limit=40",
+            self.instance_url, user_id
+        );
+        self.fetch_timeline(&timeline_url, cutoff_date, Some(access_token))
+            .await
     }
 
     async fn search_hashtag_posts(
@@ -190,15 +176,13 @@ impl PixelfedService {
         let access_token = self.require_access_token()?;
         let clean_hashtag = hashtag.trim_start_matches('#');
 
-        self.fetch_timeline(
-            &format!(
-                "{}/api/v1/timelines/tag/{}?limit=40",
-                self.instance_url, clean_hashtag
-            ),
-            cutoff_date,
-            Some(access_token),
-        )
-        .await
+        let timeline_url = format!(
+            "{}/api/v1/timelines/tag/{}?limit=40",
+            self.instance_url, clean_hashtag
+        );
+
+        self.fetch_timeline(&timeline_url, cutoff_date, Some(access_token))
+            .await
     }
 
     async fn fetch_timeline(
@@ -209,15 +193,12 @@ impl PixelfedService {
     ) -> Result<Vec<SearchResult>> {
         let mut results = Vec::new();
         let mut max_id: Option<String> = None;
-        let mut pages_fetched = 0u32;
+        let mut page = 0u32;
 
         loop {
-            pages_fetched += 1;
-            if pages_fetched > 100 {
-                log::warn!(
-                    "Pixelfed timeline fetch aborted after {} pages with no cutoff",
-                    pages_fetched
-                );
+            page += 1;
+            if page > 120 {
+                log::warn!("Mastodon timeline fetch aborted after {} pages", page);
                 break;
             }
 
@@ -227,7 +208,7 @@ impl PixelfedService {
                 url.push_str(&format!("{}max_id={}", join_char, id));
             }
 
-            log::info!("Fetching Pixelfed timeline page {}: {}", pages_fetched, url);
+            log::info!("Fetching Mastodon timeline page {}: {}", page, url);
 
             let mut request = self.client.get(&url);
             if let Some(token) = access_token {
@@ -235,7 +216,6 @@ impl PixelfedService {
             }
 
             let response = request.send().await?;
-
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -260,7 +240,8 @@ impl PixelfedService {
                     continue;
                 }
 
-                fallback_next_max_id = Some(post.id.clone());
+                let post_id = post.id.clone();
+                fallback_next_max_id = Some(post_id.clone());
 
                 let created_at_str = match post.created_at.as_deref() {
                     Some(value) if !value.is_empty() => value,
@@ -277,18 +258,18 @@ impl PixelfedService {
                     break;
                 }
 
-                let author = Self::account_display_name(&post);
+                let author = Self::account_name(&post);
                 let (media_urls, media_types, media_count) = Self::extract_media(&post);
                 let likes = post.favourites_count.unwrap_or(0);
                 let shares = post.reblogs_count.unwrap_or(0);
                 let url = post
                     .url
                     .clone()
-                    .unwrap_or_else(|| self.fallback_post_url(&post.id));
+                    .unwrap_or_else(|| self.fallback_post_url(&post));
 
-                let search_result = SearchResult {
-                    platform: Platform::Pixelfed,
-                    id: post.id.clone(),
+                results.push(SearchResult {
+                    platform: Platform::Mastodon,
+                    id: post_id.clone(),
                     author,
                     content: strip_html_tags(post.content.as_deref().unwrap_or("")),
                     created_at,
@@ -298,11 +279,10 @@ impl PixelfedService {
                     likes,
                     shares,
                     url,
-                };
+                });
 
                 processed_any = true;
-                max_id = Some(post.id);
-                results.push(search_result);
+                max_id = Some(post_id);
             }
 
             if found_old_post {
@@ -327,14 +307,10 @@ impl PixelfedService {
     }
 }
 
-// ============================================================================
-// SocialPlatform Trait Implementation
-// ============================================================================
-
 #[async_trait]
-impl SocialPlatform for PixelfedService {
+impl SocialPlatform for MastodonService {
     fn platform(&self) -> Platform {
-        Platform::Pixelfed
+        Platform::Mastodon
     }
 
     fn is_authenticated(&self) -> bool {
@@ -362,10 +338,6 @@ impl SocialPlatform for PixelfedService {
         self.search_hashtag_posts(hashtag, cutoff_date).await
     }
 }
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
 
 fn strip_html_tags(html: &str) -> String {
     let re = regex::Regex::new(r"<[^>]*>").unwrap();

@@ -1,11 +1,12 @@
 use anyhow::Result;
 use chrono::Utc;
 use futures_util::StreamExt;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
-use crate::models::{AppSettings, SearchResult};
+use crate::models::{AppSettings, PlatformSearchResults, SearchContext, SearchResult, SearchType};
 
 pub struct DownloadService {
     client: reqwest::Client,
@@ -22,45 +23,69 @@ impl DownloadService {
 
     pub async fn download_all<F>(
         &self,
-        results: Vec<SearchResult>,
+        context: Option<SearchContext>,
+        groups: Vec<PlatformSearchResults>,
         mut progress_callback: F,
     ) -> Result<PathBuf>
     where
         F: FnMut(f64),
     {
+        let mut results: Vec<SearchResult> = Vec::new();
+
+        for group in groups.into_iter() {
+            if group.error.is_some() {
+                continue;
+            }
+            results.extend(group.results.into_iter());
+        }
+
         if results.is_empty() {
             return Err(anyhow::anyhow!("No results to download"));
         }
 
-        // Create download directory
-        let download_dir = self.create_download_directory(&results[0])?;
+        let total_files: usize = results.iter().map(|result| result.media_urls.len()).sum();
+        if total_files == 0 {
+            return Err(anyhow::anyhow!("No media attachments to download"));
+        }
 
-        let total_files: usize = results.iter().map(|r| r.media_urls.len()).sum();
-        let mut downloaded_files = 0;
-
-        progress_callback(0.0);
-
-        // Use semaphore to limit concurrent downloads
+        let download_root = self.create_download_root(context.as_ref())?;
+        let mut ensured_dirs: HashSet<PathBuf> = HashSet::new();
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
             self.settings.download.max_concurrent as usize,
         ));
 
-        // Create tasks for all downloads
+        progress_callback(0.0);
+
         let mut tasks = Vec::new();
 
         for result in results {
+            if result.media_urls.is_empty() {
+                continue;
+            }
+
+            let platform_dir = download_root.join(result.platform.folder_name());
+            if ensured_dirs.insert(platform_dir.clone()) {
+                fs::create_dir_all(&platform_dir)?;
+            }
+
             for (media_index, media_url) in result.media_urls.iter().enumerate() {
                 let permit = semaphore.clone().acquire_owned().await?;
                 let client = self.client.clone();
-                let download_dir = download_dir.clone();
                 let media_url = media_url.clone();
+                let file_dir = platform_dir.clone();
                 let result_id = result.id.clone();
 
                 let task = tokio::spawn(async move {
-                    let _permit = permit; // Hold permit until task completes
+                    let _permit = permit;
+                    if let Err(err) = tokio::fs::create_dir_all(&file_dir).await {
+                        return Err(anyhow::anyhow!(
+                            "Failed to prepare download directory: {}",
+                            err
+                        ));
+                    }
 
                     let filename = Self::generate_filename(&result_id, media_index, &media_url);
-                    let file_path = download_dir.join(filename);
+                    let file_path = file_dir.join(filename);
 
                     Self::download_file(&client, &media_url, &file_path).await
                 });
@@ -69,7 +94,8 @@ impl DownloadService {
             }
         }
 
-        // Wait for all downloads to complete
+        let mut downloaded_files = 0usize;
+
         for task in tasks {
             match task.await? {
                 Ok(_) => {
@@ -83,23 +109,42 @@ impl DownloadService {
             }
         }
 
-        Ok(download_dir)
+        Ok(download_root)
     }
 
-    fn create_download_directory(&self, first_result: &SearchResult) -> Result<PathBuf> {
+    fn create_download_root(&self, context: Option<&SearchContext>) -> Result<PathBuf> {
         let base_path = Path::new(&self.settings.download.base_path);
-        let pixelfed_dir = base_path.join("pixelfed");
+        let now = Utc::now();
 
-        let folder_name = if self.settings.download.organize_by_date {
-            format!("{}_{}", first_result.author, Utc::now().format("%Y-%m-%d"))
+        let mut root = if self.settings.download.organize_by_date {
+            base_path.join(now.format("%Y-%m-%d").to_string())
         } else {
-            first_result.author.clone()
+            base_path.to_path_buf()
         };
 
-        let download_dir = pixelfed_dir.join(folder_name);
-        fs::create_dir_all(&download_dir)?;
+        let (query_folder, days_segment) = context
+            .map(|ctx| {
+                let prefix = match ctx.search_type {
+                    SearchType::User => "user",
+                    SearchType::Hashtag => "hashtag",
+                };
+                (
+                    format!("{}-{}", prefix, ctx.get_folder_name()),
+                    format!("{}d", ctx.days_back),
+                )
+            })
+            .unwrap_or_else(|| ("search".to_string(), "any".to_string()));
 
-        Ok(download_dir)
+        root = root.join(format!(
+            "{}-{}-{}",
+            query_folder,
+            days_segment,
+            now.format("%H%M%S")
+        ));
+
+        fs::create_dir_all(&root)?;
+
+        Ok(root)
     }
 
     async fn download_file(client: &reqwest::Client, url: &str, file_path: &Path) -> Result<()> {

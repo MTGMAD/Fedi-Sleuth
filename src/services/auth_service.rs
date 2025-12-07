@@ -1,20 +1,20 @@
 use anyhow::Result;
 use oauth2::basic::BasicClient;
 use oauth2::{
-    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    RedirectUrl, Scope, TokenUrl,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope,
+    TokenUrl,
 };
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use url::Url;
 
-use crate::models::ApiSettings;
+use crate::models::PlatformAuth;
 
 pub struct AuthService {
     client: Option<BasicClient>,
     http_client: Client,
-    settings: ApiSettings,
+    platform_auth: PlatformAuth,
     instance_url: String,
     redirect_uri: String,
 }
@@ -22,18 +22,26 @@ pub struct AuthService {
 #[allow(dead_code)]
 impl AuthService {
     #[allow(dead_code)]
-    pub fn new(settings: ApiSettings, instance_url: &str) -> Result<Self> {
-        Self::new_with_redirect(settings, instance_url, "http://localhost:8080/callback")
+    pub fn new(platform_auth: PlatformAuth, instance_url: &str) -> Result<Self> {
+        Self::new_with_redirect(
+            platform_auth,
+            instance_url,
+            "http://localhost:8080/callback",
+        )
     }
 
-    pub fn new_with_redirect(settings: ApiSettings, instance_url: &str, redirect_uri: &str) -> Result<Self> {
-        let client = if settings.use_oauth && !settings.client_id.is_empty() {
+    pub fn new_with_redirect(
+        platform_auth: PlatformAuth,
+        instance_url: &str,
+        redirect_uri: &str,
+    ) -> Result<Self> {
+        let client = if !platform_auth.client_id.is_empty() {
             let auth_url = AuthUrl::new(format!("{}/oauth/authorize", instance_url))?;
             let token_url = TokenUrl::new(format!("{}/oauth/token", instance_url))?;
 
             let client = BasicClient::new(
-                ClientId::new(settings.client_id.clone()),
-                Some(ClientSecret::new(settings.client_secret.clone())),
+                ClientId::new(platform_auth.client_id.clone()),
+                Some(ClientSecret::new(platform_auth.client_secret.clone())),
                 auth_url,
                 Some(token_url),
             )
@@ -48,7 +56,7 @@ impl AuthService {
         Ok(Self {
             client,
             http_client: Client::new(),
-            settings,
+            platform_auth,
             instance_url: instance_url.to_string(),
             redirect_uri: redirect_uri.to_string(),
         })
@@ -164,26 +172,23 @@ impl AuthService {
         let token_url = format!("{}/oauth/token", self.instance_url);
 
         let mut params = HashMap::new();
-        params.insert(
-            "grant_type".to_string(),
-            "authorization_code".to_string(),
-        );
+        params.insert("grant_type".to_string(), "authorization_code".to_string());
         params.insert("code".to_string(), code.secret().to_string());
+        params.insert("redirect_uri".to_string(), self.redirect_uri.clone());
         params.insert(
-            "redirect_uri".to_string(),
-            self.redirect_uri.clone(),
+            "client_id".to_string(),
+            self.platform_auth.client_id.clone(),
         );
-        params.insert("client_id".to_string(), self.settings.client_id.clone());
         params.insert(
             "client_secret".to_string(),
-            self.settings.client_secret.clone(),
+            self.platform_auth.client_secret.clone(),
         );
 
         let response = self
             .http_client
             .post(&token_url)
             .form(&params)
-            .header("User-Agent", "PixelfedRustClient/1.0")
+            .header("User-Agent", "Fedi-Sleuth/1.0")
             .send()
             .await?;
 
@@ -213,18 +218,18 @@ impl AuthService {
 
         let mut params = HashMap::new();
         params.insert("token", access_token);
-        if !self.settings.client_id.is_empty() {
-            params.insert("client_id", &self.settings.client_id);
+        if !self.platform_auth.client_id.is_empty() {
+            params.insert("client_id", &self.platform_auth.client_id);
         }
-        if !self.settings.client_secret.is_empty() {
-            params.insert("client_secret", &self.settings.client_secret);
+        if !self.platform_auth.client_secret.is_empty() {
+            params.insert("client_secret", &self.platform_auth.client_secret);
         }
 
         let response = self
             .http_client
             .post(&url)
             .form(&params)
-            .header("User-Agent", "PixelfedRustClient/1.0")
+            .header("User-Agent", "Fedi-Sleuth/1.0")
             .send()
             .await?;
 
@@ -239,18 +244,14 @@ impl AuthService {
     }
 
     pub fn is_authenticated(&self) -> bool {
-        self.settings.access_token.is_some()
+        self.platform_auth.access_token.is_some()
     }
 
     pub fn get_access_token(&self) -> Option<&str> {
-        self.settings.access_token.as_deref()
+        self.platform_auth.access_token.as_deref()
     }
 
-    pub fn is_using_oauth(&self) -> bool {
-        self.settings.use_oauth
-    }
-
-    pub fn supports_public_api(&self) -> bool {
-        !self.settings.use_oauth
+    pub fn is_enabled(&self) -> bool {
+        self.platform_auth.enabled
     }
 }

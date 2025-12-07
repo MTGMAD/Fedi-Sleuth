@@ -8,64 +8,80 @@ use tokio::{
 };
 use url::Url;
 
-use crate::models::{ApiSettings, AppSettings, AppState, Theme};
+use crate::models::{AppState, PlatformAuth, Theme};
 use crate::services::{AuthService, SettingsService};
 
-// OAuth helper functions
-async fn start_oauth_flow(app_settings: AppSettings) -> Result<ApiSettings, String> {
-    let instance_url = normalize_instance_url(&app_settings.instance_url)?;
+fn parse_checkbox(value: &str) -> bool {
+    value
+        .parse::<bool>()
+        .unwrap_or_else(|_| matches!(value, "on" | "1"))
+}
 
-    let mut api_settings = app_settings.api.clone();
-    api_settings.use_oauth = true;
+// OAuth helper functions shared by Pixelfed and Mastodon
+async fn start_platform_oauth_flow(
+    platform_name: &str,
+    mut platform_auth: PlatformAuth,
+) -> Result<PlatformAuth, String> {
+    let instance_url = normalize_instance_url(&platform_auth.instance_url)?;
+    platform_auth.instance_url = instance_url.clone();
 
-    // Start the callback listener FIRST to get a free port
-    log::info!("Starting OAuth callback listener on a free port...");
-    
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await
-        .map_err(|e| format!("Failed to start callback listener: {}", e))?;
-    
-    let callback_port = listener.local_addr()
-        .map_err(|e| format!("Failed to get listener address: {}", e))?
+    log::info!(
+        "Starting OAuth callback listener on a free port for {}...",
+        platform_name
+    );
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|e| format!("Failed to start {} callback listener: {}", platform_name, e))?;
+
+    let callback_port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to read {} listener address: {}", platform_name, e))?
         .port();
-    
-    log::info!("Callback listener ready on port {}", callback_port);
 
-    // Always register a new OAuth app with the dynamic port
+    log::info!(
+        "{} callback listener ready on port {}",
+        platform_name,
+        callback_port
+    );
+
     let redirect_uri = format!("http://localhost:{}/callback", callback_port);
-    
-    let registration_service = AuthService::new_with_redirect(
-        api_settings.clone(), 
-        &instance_url,
-        &redirect_uri
-    ).map_err(|e| format!("Failed to initialize auth service: {}", e))?;
+
+    let registration_service =
+        AuthService::new_with_redirect(platform_auth.clone(), &instance_url, &redirect_uri)
+            .map_err(|e| format!("Failed to initialize {} auth client: {}", platform_name, e))?;
 
     let (client_id, client_secret) = registration_service
-        .register_app(&api_settings.app_name)
+        .register_app(&platform_auth.app_name)
         .await
-        .map_err(|e| format!("Failed to register OAuth app: {}", e))?;
+        .map_err(|e| format!("Failed to register {} OAuth app: {}", platform_name, e))?;
 
-    api_settings.client_id = client_id;
-    api_settings.client_secret = client_secret;
+    platform_auth.client_id = client_id;
+    platform_auth.client_secret = client_secret;
 
-    let oauth_service = AuthService::new_with_redirect(
-        api_settings.clone(), 
-        &instance_url,
-        &redirect_uri
-    ).map_err(|e| format!("Failed to initialize OAuth client: {}", e))?;
+    let oauth_service =
+        AuthService::new_with_redirect(platform_auth.clone(), &instance_url, &redirect_uri)
+            .map_err(|e| format!("Failed to initialize {} OAuth client: {}", platform_name, e))?;
 
-    let (auth_url, csrf_token) = oauth_service
-        .generate_auth_url()
-        .map_err(|e| format!("Failed to generate authorization URL: {}", e))?;
+    let (auth_url, csrf_token) = oauth_service.generate_auth_url().map_err(|e| {
+        format!(
+            "Failed to generate {} authorization URL: {}",
+            platform_name, e
+        )
+    })?;
 
-    log::info!("Opening browser for OAuth authorization...");
-
-    // NOW open the browser
+    log::info!(
+        "Opening browser for {} OAuth authorization...",
+        platform_name
+    );
     open_browser(auth_url.as_str())?;
-    log::info!("Opened browser for OAuth authorization: {}", auth_url);
+    log::info!(
+        "Opened browser for {} OAuth authorization: {}",
+        platform_name,
+        auth_url
+    );
 
-    // Wait for the callback
-    let callback_result = wait_for_oauth_callback_with_listener(listener).await?;
-    let (code, state) = callback_result;
+    let (code, state) = wait_for_oauth_callback_with_listener(listener).await?;
 
     if state != csrf_token.secret().as_str() {
         return Err("OAuth state mismatch. Please try again.".to_string());
@@ -74,11 +90,12 @@ async fn start_oauth_flow(app_settings: AppSettings) -> Result<ApiSettings, Stri
     let access_token = oauth_service
         .exchange_code(AuthorizationCode::new(code), csrf_token)
         .await
-        .map_err(|e| format!("Failed to exchange authorization code: {}", e))?;
+        .map_err(|e| format!("Failed to complete {} sign-in: {}", platform_name, e))?;
 
-    api_settings.access_token = Some(access_token);
+    platform_auth.access_token = Some(access_token);
+    platform_auth.enabled = true;
 
-    Ok(api_settings)
+    Ok(platform_auth)
 }
 
 fn open_browser(url: &str) -> Result<(), String> {
@@ -114,7 +131,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 fn normalize_instance_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("Instance URL is empty. Please configure your Pixelfed instance.".to_string());
+        return Err("Instance URL is empty. Please update the instance settings.".to_string());
     }
 
     let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -126,14 +143,18 @@ fn normalize_instance_url(raw: &str) -> Result<String, String> {
     Ok(with_scheme.trim_end_matches('/').to_string())
 }
 
-async fn wait_for_oauth_callback_with_listener(listener: TcpListener) -> Result<(String, String), String> {
+async fn wait_for_oauth_callback_with_listener(
+    listener: TcpListener,
+) -> Result<(String, String), String> {
     let timeout_duration = Duration::from_secs(180);
 
-    log::info!("Waiting for OAuth callback on http://localhost:8080/callback ...");
+    log::info!("Waiting for OAuth callback on temporary localhost port...");
 
     let (mut stream, addr) = timeout(timeout_duration, listener.accept())
         .await
-        .map_err(|_| "OAuth authorization timed out after 3 minutes. Please try again.".to_string())?
+        .map_err(|_| {
+            "OAuth authorization timed out after 3 minutes. Please try again.".to_string()
+        })?
         .map_err(|e| format!("Failed to accept OAuth callback: {}", e))?;
 
     log::info!("Received connection from: {}", addr);
@@ -145,8 +166,11 @@ async fn wait_for_oauth_callback_with_listener(listener: TcpListener) -> Result<
         .map_err(|e| format!("Failed to read OAuth callback: {}", e))?;
 
     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    log::debug!("Received OAuth callback request: {}", request.lines().next().unwrap_or(""));
-    
+    log::debug!(
+        "Received OAuth callback request: {}",
+        request.lines().next().unwrap_or("")
+    );
+
     let request_line = request
         .lines()
         .next()
@@ -219,12 +243,12 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
     cx.render(rsx! {
         div {
             class: "settings-layout",
-            
+
             // Left sidebar navigation
             div {
                 class: "settings-sidebar",
                 h2 { "Settings" }
-                
+
                 div {
                     class: "settings-nav",
                     button {
@@ -244,7 +268,7 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                     }
                 }
             }
-            
+
             // Right content area
             div {
                 class: "settings-content",
@@ -253,7 +277,7 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                         div {
                             class: "settings-section-content",
                             h3 { "🎨 Appearance Settings" }
-                            
+
                             div {
                                 class: "form-group",
                                 label { "Theme:" }
@@ -309,97 +333,82 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                         div {
                             class: "settings-section-content",
                             h3 { "🔑 API & Authentication Settings" }
-                            
+
                             div {
                                 class: "form-group",
                                 label { "Pixelfed Instance URL:" }
                                 input {
                                     r#type: "text",
-                                    value: "{temp_settings.current().instance_url}",
+                                    value: "{temp_settings.current().api.pixelfed.instance_url}",
                                     placeholder: "pixelfed.social",
                                     oninput: move |evt| {
                                         let mut settings = temp_settings.current().as_ref().clone();
-                                        settings.instance_url = evt.value.clone();
+                                        settings.api.pixelfed.instance_url = evt.value.clone();
                                         temp_settings.set(settings);
                                     },
                                 }
                                 small { "Enter the URL of your Pixelfed instance (without https://)" }
                             }
-                            
+
                             div {
                                 class: "form-group",
-                                label { "API Access Method:" }
+                                label { "Enable Pixelfed:" }
                                 div {
                                     class: "radio-group",
                                     label {
                                         class: "radio-label",
                                         input {
-                                            r#type: "radio",
-                                            name: "api_method",
-                                            checked: !temp_settings.current().api.use_oauth,
-                                            onchange: move |_| {
+                                            r#type: "checkbox",
+                                            checked: temp_settings.current().api.pixelfed.enabled,
+                                            onchange: move |evt| {
                                                 let mut settings = temp_settings.current().as_ref().clone();
-                                                settings.api.use_oauth = false;
+                                                settings.api.pixelfed.enabled = parse_checkbox(&evt.value);
                                                 temp_settings.set(settings);
                                             },
                                         }
-                                        "🌐 Public API (Limited Access)"
-                                    }
-                                    label {
-                                        class: "radio-label",
-                                        input {
-                                            r#type: "radio",
-                                            name: "api_method",
-                                            checked: temp_settings.current().api.use_oauth,
-                                            onchange: move |_| {
-                                                let mut settings = temp_settings.current().as_ref().clone();
-                                                settings.api.use_oauth = true;
-                                                temp_settings.set(settings);
-                                            },
-                                        }
-                                        "🔑 OAuth Authentication (Full Access)"
+                                        "Use Pixelfed for searches"
                                     }
                                 }
-                                small { 
-                                    if temp_settings.current().api.use_oauth {
-                                        "OAuth provides full API access and higher rate limits, but requires authentication."
+                                small {
+                                    if temp_settings.current().api.pixelfed.enabled {
+                                        "Pixelfed is enabled. OAuth authentication required for searches."
                                     } else {
-                                        "Public API allows basic searches without authentication, but with limited access and lower rate limits."
+                                        "Enable Pixelfed to search and download from Pixelfed instances."
                                     }
                                 }
                             }
 
-                            if temp_settings.current().api.use_oauth {
+                            if temp_settings.current().api.pixelfed.enabled {
                                 rsx! {
                                     div {
                                         class: "oauth-section",
-                                        
+
                                         div {
                                             class: "form-group",
                                             label { "OAuth Application Name:" }
                                             input {
                                                 r#type: "text",
-                                                value: "{temp_settings.current().api.app_name}",
-                                                placeholder: "Pixelfed Rust Client",
+                                                value: "{temp_settings.current().api.pixelfed.app_name}",
+                                                placeholder: "Fedi Sleuth",
                                                 oninput: move |evt| {
                                                     let mut settings = temp_settings.current().as_ref().clone();
-                                                    settings.api.app_name = evt.value.clone();
+                                                    settings.api.pixelfed.app_name = evt.value.clone();
                                                     temp_settings.set(settings);
                                                 },
                                             }
                                             small { "Name for your OAuth application (shown to users during login)" }
                                         }
-                                        
+
                                         div {
                                             class: "form-group",
                                             label { "Client ID:" }
                                             input {
                                                 r#type: "text",
-                                                value: "{temp_settings.current().api.client_id}",
+                                                value: "{temp_settings.current().api.pixelfed.client_id}",
                                                 placeholder: "Your OAuth Client ID",
                                                 oninput: move |evt| {
                                                     let mut settings = temp_settings.current().as_ref().clone();
-                                                    settings.api.client_id = evt.value.clone();
+                                                    settings.api.pixelfed.client_id = evt.value.clone();
                                                     temp_settings.set(settings);
                                                 },
                                             }
@@ -409,21 +418,21 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                             label { "Client Secret:" }
                                             input {
                                                 r#type: "password",
-                                                value: "{temp_settings.current().api.client_secret}",
+                                                value: "{temp_settings.current().api.pixelfed.client_secret}",
                                                 placeholder: "Your OAuth Client Secret",
                                                 oninput: move |evt| {
                                                     let mut settings = temp_settings.current().as_ref().clone();
-                                                    settings.api.client_secret = evt.value.clone();
+                                                    settings.api.pixelfed.client_secret = evt.value.clone();
                                                     temp_settings.set(settings);
                                                 },
                                             }
                                         }
-                                        
+
                                         div {
                                             class: "oauth-status",
-                                            if !temp_settings.current().api.access_token.is_none() {
+                                            if temp_settings.current().api.pixelfed.access_token.is_some() {
                                                 rsx! {
-                                                    p { 
+                                                    p {
                                                         style: "color: var(--success); font-weight: 500;",
                                                         "✅ Authenticated - OAuth token active"
                                                     }
@@ -431,9 +440,9 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                                         class: "oauth-btn secondary",
                                                         onclick: move |_| {
                                                             let mut settings = temp_settings.current().as_ref().clone();
-                                                            settings.api.access_token = None;
-                                                            settings.api.client_id = String::new();
-                                                            settings.api.client_secret = String::new();
+                                                            settings.api.pixelfed.access_token = None;
+                                                            settings.api.pixelfed.client_id = String::new();
+                                                            settings.api.pixelfed.client_secret = String::new();
                                                             temp_settings.set(settings);
                                                         },
                                                         "🚪 Sign Out & Clear Credentials"
@@ -441,7 +450,7 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                                 }
                                             } else {
                                                 rsx! {
-                                                    p { 
+                                                    p {
                                                         style: "color: var(--info); font-weight: 500;",
                                                         "🔑 Ready to authenticate with Pixelfed"
                                                     }
@@ -451,14 +460,14 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                                             to_owned![temp_settings, cx.props.app_state];
 
                                                             cx.spawn(async move {
-                                                                log::info!("Starting OAuth flow...");
+                                                                log::info!("Starting OAuth flow for Pixelfed...");
 
-                                                                let current_settings = temp_settings.current().as_ref().clone();
+                                                                let mut merged_settings = temp_settings.current().as_ref().clone();
+                                                                let platform_auth = merged_settings.api.pixelfed.clone();
 
-                                                                match start_oauth_flow(current_settings.clone()).await {
-                                                                    Ok(updated_api) => {
-                                                                        let mut merged_settings = current_settings;
-                                                                        merged_settings.api = updated_api;
+                                                                match start_platform_oauth_flow("Pixelfed", platform_auth).await {
+                                                                    Ok(updated_platform_auth) => {
+                                                                        merged_settings.api.pixelfed = updated_platform_auth;
 
                                                                         temp_settings.set(merged_settings.clone());
 
@@ -467,25 +476,25 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                                                         });
 
                                                                         if let Err(err) = SettingsService::save_settings(&merged_settings).await {
-                                                                            log::error!("Failed to persist OAuth settings: {}", err);
+                                                                            log::error!("Failed to persist Pixelfed OAuth settings: {}", err);
                                                                         } else {
-                                                                            log::info!("OAuth authentication completed successfully");
+                                                                            log::info!("Pixelfed OAuth authentication completed successfully");
                                                                         }
                                                                     }
                                                                     Err(e) => {
-                                                                        log::error!("OAuth setup failed: {}", e);
+                                                                        log::error!("Pixelfed OAuth setup failed: {}", e);
                                                                     }
                                                                 }
                                                             });
                                                         },
                                                         "🔑 Sign In with Pixelfed"
                                                     }
-                                                    
-                                                    if !temp_settings.current().api.client_id.is_empty() {
+
+                                                    if !temp_settings.current().api.pixelfed.client_id.is_empty() {
                                                         rsx! {
                                                             div {
                                                                 style: "margin-top: 12px;",
-                                                                p { 
+                                                                p {
                                                                     style: "color: var(--text-secondary); font-size: 13px;",
                                                                     "App registered. Click above to complete authorization in your browser."
                                                                 }
@@ -495,7 +504,7 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                                 }
                                             }
                                         }
-                                        
+
                                         div {
                                             class: "oauth-help",
                                             h4 { "How to get OAuth credentials:" }
@@ -508,7 +517,7 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                                 li { "Select Scopes: 'read' (and 'write' if needed)" }
                                                 li { "Copy the Client ID and Client Secret here" }
                                             }
-                                            p { 
+                                            p {
                                                 style: "margin-top: 10px; font-style: italic;",
                                                 "Note: OAuth requires the instance to have OAUTH_ENABLED=true in their configuration."
                                             }
@@ -528,9 +537,263 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                                             li { "❌ Higher rate limits" }
                                             li { "❌ Posting or interactions" }
                                         }
-                                        p { 
+                                        p {
                                             style: "margin-top: 10px; color: var(--text-secondary);",
                                             "Switch to OAuth for full access and authentication features."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        div {
+                            class: "settings-subsection",
+                            h4 { "🐘 Mastodon" }
+
+                            div {
+                                class: "form-group",
+                                label { "Mastodon Instance URL:" }
+                                input {
+                                    r#type: "text",
+                                    value: "{temp_settings.current().api.mastodon.instance_url}",
+                                    placeholder: "mastodon.social",
+                                    oninput: move |evt| {
+                                        let mut settings = temp_settings.current().as_ref().clone();
+                                        settings.api.mastodon.instance_url = evt.value.clone();
+                                        temp_settings.set(settings);
+                                    },
+                                }
+                                small { "Enter the domain of your Mastodon instance." }
+                            }
+
+                            div {
+                                class: "form-group",
+                                label { "Enable Mastodon:" }
+                                div {
+                                    class: "radio-group",
+                                    label {
+                                        class: "radio-label",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: temp_settings.current().api.mastodon.enabled,
+                                            onchange: move |evt| {
+                                                let mut settings = temp_settings.current().as_ref().clone();
+                                                settings.api.mastodon.enabled = parse_checkbox(&evt.value);
+                                                temp_settings.set(settings);
+                                            },
+                                        }
+                                        "Use Mastodon for searches"
+                                    }
+                                }
+                                small {
+                                    if temp_settings.current().api.mastodon.enabled {
+                                        "Mastodon searches require OAuth authentication with read scope."
+                                    } else {
+                                        "Enable Mastodon to include Mastodon timelines in search results."
+                                    }
+                                }
+                            }
+
+                            if temp_settings.current().api.mastodon.enabled {
+                                rsx! {
+                                    div {
+                                        class: "oauth-section",
+
+                                        div {
+                                            class: "form-group",
+                                            label { "OAuth Application Name:" }
+                                            input {
+                                                r#type: "text",
+                                                value: "{temp_settings.current().api.mastodon.app_name}",
+                                                placeholder: "Fedi Sleuth",
+                                                oninput: move |evt| {
+                                                    let mut settings = temp_settings.current().as_ref().clone();
+                                                    settings.api.mastodon.app_name = evt.value.clone();
+                                                    temp_settings.set(settings);
+                                                },
+                                            }
+                                            small { "Shown to you when approving the app on Mastodon." }
+                                        }
+
+                                        div {
+                                            class: "form-group",
+                                            label { "Client ID:" }
+                                            input {
+                                                r#type: "text",
+                                                value: "{temp_settings.current().api.mastodon.client_id}",
+                                                placeholder: "Your OAuth Client ID",
+                                                oninput: move |evt| {
+                                                    let mut settings = temp_settings.current().as_ref().clone();
+                                                    settings.api.mastodon.client_id = evt.value.clone();
+                                                    temp_settings.set(settings);
+                                                },
+                                            }
+                                        }
+
+                                        div {
+                                            class: "form-group",
+                                            label { "Client Secret:" }
+                                            input {
+                                                r#type: "password",
+                                                value: "{temp_settings.current().api.mastodon.client_secret}",
+                                                placeholder: "Your OAuth Client Secret",
+                                                oninput: move |evt| {
+                                                    let mut settings = temp_settings.current().as_ref().clone();
+                                                    settings.api.mastodon.client_secret = evt.value.clone();
+                                                    temp_settings.set(settings);
+                                                },
+                                            }
+                                        }
+
+                                        div {
+                                            class: "oauth-status",
+                                            if temp_settings.current().api.mastodon.access_token.is_some() {
+                                                rsx! {
+                                                    p {
+                                                        style: "color: var(--success); font-weight: 500;",
+                                                        "✅ Authenticated - OAuth token active"
+                                                    }
+                                                    button {
+                                                        class: "oauth-btn secondary",
+                                                        onclick: move |_| {
+                                                            let mut settings = temp_settings.current().as_ref().clone();
+                                                            settings.api.mastodon.access_token = None;
+                                                            settings.api.mastodon.client_id = String::new();
+                                                            settings.api.mastodon.client_secret = String::new();
+                                                            temp_settings.set(settings);
+                                                        },
+                                                        "🚪 Sign Out & Clear Credentials"
+                                                    }
+                                                }
+                                            } else {
+                                                rsx! {
+                                                    p {
+                                                        style: "color: var(--info); font-weight: 500;",
+                                                        "🔑 Ready to authenticate with Mastodon"
+                                                    }
+                                                    button {
+                                                        class: "oauth-btn primary",
+                                                        onclick: move |_| {
+                                                            to_owned![temp_settings, cx.props.app_state];
+
+                                                            cx.spawn(async move {
+                                                                log::info!("Starting OAuth flow for Mastodon...");
+
+                                                                let mut merged_settings = temp_settings.current().as_ref().clone();
+                                                                let platform_auth = merged_settings.api.mastodon.clone();
+
+                                                                match start_platform_oauth_flow("Mastodon", platform_auth).await {
+                                                                    Ok(updated_platform_auth) => {
+                                                                        merged_settings.api.mastodon = updated_platform_auth;
+
+                                                                        temp_settings.set(merged_settings.clone());
+
+                                                                        app_state.set(AppState {
+                                                                            settings: merged_settings.clone(),
+                                                                        });
+
+                                                                        if let Err(err) = SettingsService::save_settings(&merged_settings).await {
+                                                                            log::error!("Failed to persist Mastodon OAuth settings: {}", err);
+                                                                        } else {
+                                                                            log::info!("Mastodon OAuth authentication completed successfully");
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        log::error!("Mastodon OAuth setup failed: {}", e);
+                                                                    }
+                                                                }
+                                                            });
+                                                        },
+                                                        "🔑 Sign In with Mastodon"
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        div {
+                                            class: "oauth-help",
+                                            h4 { "Need help connecting Mastodon?" }
+                                            ol {
+                                                li { "Visit your Mastodon instance (e.g., mastodon.social)." }
+                                                li { "Open Preferences → Development → New application." }
+                                                li { "Set the redirect URL shown after clicking Sign In." }
+                                                li { "Approve the requested read scope to allow searches." }
+                                            }
+                                            p {
+                                                style: "margin-top: 10px; color: var(--text-secondary);",
+                                                "Tokens should include the 'read' scope. 'write' is optional for future features."
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        div {
+                            class: "settings-subsection",
+                            h4 { "🦋 Bluesky" }
+
+                            div {
+                                class: "form-group",
+                                label { "Enable Bluesky:" }
+                                div {
+                                    class: "radio-group",
+                                    label {
+                                        class: "radio-label",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: temp_settings.current().api.bluesky.enabled,
+                                            onchange: move |evt| {
+                                                let mut settings = temp_settings.current().as_ref().clone();
+                                                settings.api.bluesky.enabled = parse_checkbox(&evt.value);
+                                                temp_settings.set(settings);
+                                            },
+                                        }
+                                        "Use Bluesky for searches"
+                                    }
+                                }
+                                small {
+                                    if temp_settings.current().api.bluesky.enabled {
+                                        "Bluesky searches use your app password to create temporary API sessions."
+                                    } else {
+                                        "Enable Bluesky to include Bluesky posts in combined searches."
+                                    }
+                                }
+                            }
+
+                            if temp_settings.current().api.bluesky.enabled {
+                                rsx! {
+                                    div {
+                                        class: "form-group",
+                                        label { "Handle:" }
+                                        input {
+                                            r#type: "text",
+                                            value: "{temp_settings.current().api.bluesky.handle}",
+                                            placeholder: "yourname.bsky.social",
+                                            oninput: move |evt| {
+                                                let mut settings = temp_settings.current().as_ref().clone();
+                                                settings.api.bluesky.handle = evt.value.clone();
+                                                temp_settings.set(settings);
+                                            },
+                                        }
+                                        small { "Use your full Bluesky handle (including the domain)." }
+                                    }
+
+                                    div {
+                                        class: "form-group",
+                                        label { "App Password:" }
+                                        input {
+                                            r#type: "password",
+                                            value: "{temp_settings.current().api.bluesky.app_password}",
+                                            placeholder: "xxxx-xxxx-xxxx-xxxx",
+                                            oninput: move |evt| {
+                                                let mut settings = temp_settings.current().as_ref().clone();
+                                                settings.api.bluesky.app_password = evt.value.clone();
+                                                temp_settings.set(settings);
+                                            },
+                                        }
+                                        small {
+                                            "Generate an app password from Bluesky Settings → App Passwords (4 blocks of letters)."
                                         }
                                     }
                                 }
@@ -541,7 +804,7 @@ pub fn SettingsPanel(cx: Scope<SettingsPanelProps>) -> Element {
                         div {
                             class: "settings-section-content",
                             h3 { "📁 Download Settings" }
-                            
+
                             div {
                                 class: "form-group",
                                 label { "Download Location:" }

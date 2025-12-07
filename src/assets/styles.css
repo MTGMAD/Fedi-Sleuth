@@ -13,6 +13,12 @@
   --success: #107c10;
   --warning: #ff8c00;
   --error: #d13438;
+  --info: #0078d4;
+  --surface: #ffffff;
+  --surface-alt: #f5f5f5;
+  --hover: #eeeeee;
+  --border: #e5e5e5;
+  --text: #000000;
 }
 
 [data-theme="dark"] {
@@ -23,6 +29,14 @@
   --text-secondary: #cccccc;
   --border-color: #484848;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --info: #3b82f6;
+  --surface: #1e1e1e;
+  --surface-alt: #2d2d2d;
+  --hover: #3c3c3c;
+  --border: #484848;
+  --text: #ffffff;
 }
 
 * {
@@ -647,12 +661,12 @@ body {
 }
 
 .oauth-btn.primary {
-    background: var(--accent);
+    background: var(--accent-color);
     color: white;
 }
 
 .oauth-btn.primary:hover {
-    background: color-mix(in srgb, var(--accent) 85%, black);
+    background: var(--accent-hover);
 }
 
 .oauth-btn.secondary {
@@ -676,7 +690,7 @@ body {
 
 .oauth-help h4 {
     margin: 0 0 8px 0;
-    color: var(--accent);
+    color: var(--accent-color);
     font-size: 14px;
 }
 
@@ -711,9 +725,3 @@ body {
     margin-bottom: 4px;
 }
 
-:root {
-    --success: #22c55e;
-    --warning: #f59e0b;
-    --info: #3b82f6;
-    --surface-alt: color-mix(in srgb, var(--surface) 50%, var(--hover));
-}
