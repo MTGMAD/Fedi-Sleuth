@@ -1,38 +1,50 @@
-# Pixelfed Search & Download
-
 # Fedi Sleuth
 
-A Windows desktop application for searching and downloading content from Pixelfed instances, built with Rust and Dioxus.
+A Windows desktop application for searching and downloading content from **Pixelfed, Mastodon, and Bluesky**, built with Rust and Dioxus.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)
 
 ## Features
 
-### 🔍 Search Capabilities
-- **User Search**: Search posts from specific Pixelfed users (supports federated users with `@username@instance.social` format)
-- **Hashtag Search**: Discover posts by hashtag across your connected instance
-- **Date Range Filtering**: Search posts from the last 7-365 days (default: 180 days)
-- **Federated Search**: Cross-instance search with `resolve=true` for finding remote users
+### 🌐 Multi-Platform Support
+- **Pixelfed**: Search and download from any Pixelfed instance with OAuth 2.0
+- **Mastodon**: Access the Fediverse with OAuth authentication
+- **Bluesky**: Connect to the ATProto network with app passwords
+- **Unified Search**: Query all platforms simultaneously with grouped results
+- **Platform Toggles**: Enable/disable each platform independently
 
-### 🔐 OAuth 2.0 Authentication
-- Secure OAuth authentication with any Pixelfed instance
-- Dynamic port allocation to avoid conflicts (no more port 8080 issues!)
-- Automatic app registration and token management
-- Persistent session storage
+### 🔍 Search Capabilities
+- **User Search**: Find posts from specific users across platforms (supports `@username@instance.social` format)
+- **Hashtag Search**: Discover posts by hashtag on each connected platform
+- **Date Range Filtering**: Search posts from the last 7-365 days (default: 60 days)
+- **Federated Search**: Cross-instance lookup with full federation support
+- **Real-time Results**: Live progress tracking and grouped platform results
+
+### 🔐 Authentication
+- **Pixelfed OAuth 2.0**: Secure browser-based authentication with automatic app registration
+- **Mastodon OAuth 2.0**: Same streamlined OAuth flow as Pixelfed
+- **Bluesky ATProto**: Simple handle + app password authentication
+- **Dynamic Port Allocation**: No more port conflicts - finds free ports automatically
+- **Persistent Sessions**: Credentials saved securely between app launches
+- **Per-Platform Control**: Enable/disable and authenticate each platform independently
 
 ### 📥 Download Management
-- Bulk download all media from search results
-- Automatic organization by date (optional)
-- Concurrent downloads with configurable limits
-- Progress tracking
+- **Multi-Platform Downloads**: Organized by platform and search context
+- **Smart Folder Structure**: `Downloads/Fedi_Sleuth/{Platform}/{username_or_hashtag}_{date}/`
+- **Bulk Operations**: Download all media from search results across all platforms
+- **Concurrent Downloads**: Configurable simultaneous download limits
+- **Progress Tracking**: Real-time download progress with percentage indicators
+- **Automatic Organization**: Date-based folders with platform separation
 
 ### 🎨 Modern UI
 - **Dark/Light/System themes** with custom accent colors
+- **Platform-Grouped Results**: Results organized by Pixelfed 🟣, Mastodon 🐘, and Bluesky 🦋
 - **Hover previews**: Full post content, images, and videos in popup preview
 - **Native aspect ratios**: Media displays in original proportions
-- **Video support**: Inline playback with controls
-- Clean, responsive interface built with Dioxus
+- **Video support**: Inline playback with controls for all platforms
+- **Responsive interface**: Clean, modern design built with Dioxus
+- **Per-Platform Stats**: See result counts and errors for each platform
 
 ### ⚙️ Customization
 - Theme selection (Light, Dark, System)
@@ -84,45 +96,81 @@ Download the latest release from the [Releases](https://github.com/yourusername/
 1. **Launch the application**
    - Run `pixelfed-rust.exe`
 
-2. **Configure your Pixelfed instance**
-   - Click the ⚙️ Settings button
-   - Enter your Pixelfed instance URL (e.g., `pixelfed.social`)
+2. **Configure Your Platforms**
 
-3. **Authenticate with OAuth**
-   - Click "🔑 Sign In with Pixelfed"
-   - Authorize the app in your browser
-   - The app will automatically receive the authentication token
+   **Pixelfed (OAuth)**
+   - Go to Settings → API & Authentication → Pixelfed
+   - Enter your instance URL (e.g., `pixelfed.social`)
+   - Enable Pixelfed and click "🔑 Sign In with Pixelfed"
+   - Authorize in your browser - the app will automatically receive the token
 
-4. **Start searching**
+   **Mastodon (OAuth)**
+   - Go to Settings → API & Authentication → Mastodon  
+   - Enter your instance URL (e.g., `mastodon.social`)
+   - Enable Mastodon and click "🔑 Sign In with Mastodon"
+   - Authorize in your browser - same OAuth flow as Pixelfed
+
+   **Bluesky (App Password)**
+   - Go to Settings → API & Authentication → Bluesky
+   - Enable Bluesky
+   - Enter your handle (e.g., `yourname.bsky.social`)
+   - Create an app password at bsky.app → Settings → App Passwords
+   - Paste the app password and click "🔑 Sign In with Bluesky"
+
+3. **Start Searching**
    - Switch to the 🔍 Search tab
-   - Choose "User" or "Hashtag" search type
+   - Choose platforms to search (checkboxes next to Pixelfed/Mastodon/Bluesky)
+   - Select "User" or "Hashtag" search type
    - Enter a username (e.g., `@alice@pixelfed.social`) or hashtag (e.g., `#photography`)
+   - Set days back to search (7-365, default: 60)
    - Click "Start Search"
+   
+4. **View Results**
+   - Results are grouped by platform with emoji indicators
+   - Each platform section shows post count or error messages
+   - Hover over results for full preview popups
+   - See total posts across all platforms at the top
+
+5. **Download Media**
+   - Click "⬇️ Download All" to save media from all platforms
+   - Files organized: `Downloads/Fedi_Sleuth/{Platform}/{query}_{timestamp}/`
+   - Watch real-time progress as downloads complete
 
 ### Search Tips
 
+**Platform Selection:**
+- Check/uncheck platforms in the search panel to control which are queried
+- Only enabled AND authenticated platforms will be searched
+- Results are grouped by platform for easy comparison
+
 **User Search:**
 - Local users: `alice` or `@alice`
-- Remote users: `@alice@pixelfed.social` or `alice@mastodon.social`
+- Remote users: `@alice@pixelfed.social`, `@alice@mastodon.social`, or `alice.bsky.social`
 - First search for remote users may take longer (federation lookup)
+- Bluesky requires exact handle format (e.g., `name.bsky.social`)
 
 **Hashtag Search:**
 - Enter with or without #: `photography` or `#photography`
-- Popular hashtags may timeout - try more specific hashtags
-- Searches are limited to authenticated instance
+- Bluesky uses different hashtag indexing - results may vary
+- Popular hashtags may timeout - try more specific tags
+- Each platform searches its own federated timeline
 
 **Date Range:**
-- Default: 180 days back
-- Adjust "Days to search back" to search older/newer content
+- Default: 60 days back
+- Adjust "Days to search back" slider (7-365 days)
 - Longer ranges = more results but slower searches
+- Each platform enforces its own API rate limits
 
 ### Download Media
 
-1. Perform a search
-2. Review results in the preview popup (hover over items)
-3. Click "⬇️ Download All" button
-4. Media will be saved to your configured download folder
-5. Optional: Enable "Organize by date" in Settings for automatic date-based folders
+1. Perform a multi-platform search
+2. Review results - grouped by Pixelfed 🟣, Mastodon 🐘, Bluesky 🦋
+3. Hover over items to preview content
+4. Click "⬇️ Download All" button
+5. Media saved to: `Downloads/Fedi_Sleuth/{Platform}/{query}_{timestamp}/`
+   - Example: `Downloads/Fedi_Sleuth/Pixelfed/linux2073_20251207/`
+   - Example: `Downloads/Fedi_Sleuth/Mastodon/photography_20251207/`
+6. Watch progress bar for real-time download status
 
 ## Configuration
 
@@ -132,10 +180,17 @@ Application settings are stored at:
 %APPDATA%\fedi-sleuth\config\settings.json
 ```
 
-### OAuth Credentials
+### OAuth Credentials (Pixelfed & Mastodon)
 - Client ID and Client Secret are automatically generated during OAuth flow
-- Access tokens are stored securely in settings
+- Access tokens stored securely in settings
 - Tokens persist between sessions
+- Each platform maintains independent OAuth credentials
+
+### Bluesky Credentials
+- Requires handle and app password (not your main password!)
+- Create app passwords at: https://bsky.app → Settings → App Passwords
+- App passwords have limited scope for security
+- DIDs and session tokens stored after successful authentication
 
 ### Download Settings
 - **Base Path**: Where downloaded media is saved (default: Downloads folder)
@@ -148,13 +203,14 @@ Application settings are stored at:
 - **[Rust](https://www.rust-lang.org/)** - Systems programming language
 - **[Dioxus](https://dioxuslabs.com/)** - Reactive UI framework (v0.4)
 - **[reqwest](https://github.com/seanmonstar/reqwest)** - HTTP client with OAuth2 support
-- **[tokio](https://tokio.rs/)** - Async runtime
-- **[serde](https://serde.rs/)** - Serialization framework
+- **[tokio](https://tokio.rs/)** - Async runtime for concurrent operations
+- **[serde](https://serde.rs/)** - Serialization framework for JSON
 
 ### API Compatibility
-- Pixelfed Mastodon-compatible API (v1 & v2)
-- OAuth 2.0 (Authorization Code flow)
-- WebFinger protocol for federated user lookup
+- **Pixelfed**: Mastodon-compatible API (v1 & v2) with OAuth 2.0
+- **Mastodon**: Native API (v1 & v2) with OAuth 2.0
+- **Bluesky**: ATProto (app.bsky.* lexicons) with session authentication
+- WebFinger protocol for federated user lookup (Pixelfed/Mastodon)
 
 ### Dependencies
 All dependencies are managed by Cargo. Key dependencies include:
@@ -172,14 +228,23 @@ See `Cargo.toml` for the complete dependency list.
 ## Troubleshooting
 
 ### OAuth Callback Issues
-- **Port conflict**: The app now uses dynamic port allocation, automatically finding free ports
+- **Port conflict**: The app uses dynamic port allocation, automatically finding free ports
 - **Browser doesn't open**: Manually copy the URL from logs and paste in browser
 - **"invalid_client" error**: App re-registers automatically; try OAuth flow again
+- **Mastodon OAuth**: Uses same flow as Pixelfed - automatic app registration
+
+### Bluesky Authentication Issues
+- **"Invalid handle" error**: Ensure exact format (e.g., `name.bsky.social`)
+- **"Invalid password"**: Must use app password, not your main account password
+- **Create app password**: Go to https://bsky.app → Settings → App Passwords → Add App Password
+- **Session expired**: Re-authenticate by clicking "Sign In with Bluesky" again
 
 ### Federation Search Issues
-- **Mastodon users not found**: Pixelfed has limited Mastodon federation; try searching on a Mastodon instance instead
+- **Mastodon users on Pixelfed**: Limited federation; try searching on Mastodon instance directly
+- **Pixelfed users on Mastodon**: Usually works, but initial lookup may be slow
+- **Bluesky users**: Not federated with ActivityPub - Bluesky search is separate
 - **Remote user timeout**: First lookup can take 45 seconds; subsequent searches are cached
-- **User not found**: Ensure full handle format: `@user@instance.domain`
+- **User not found**: Ensure correct handle format for each platform
 
 ### Hashtag Search Timeouts
 - **Popular hashtags timeout**: These have thousands of posts; try more specific hashtags
@@ -239,7 +304,12 @@ The optimized binary will be at `target/release/pixelfed-rust.exe`.
 
 ## Roadmap
 
-- [ ] Multi-instance support (switch between instances)
+- [x] Multi-platform support (Pixelfed, Mastodon, Bluesky)
+- [x] OAuth 2.0 for Pixelfed and Mastodon
+- [x] Bluesky ATProto authentication
+- [x] Unified multi-platform search
+- [x] Platform-grouped results display
+- [x] Multi-platform download organization
 - [ ] Saved searches and bookmarks
 - [ ] Export results to CSV/JSON
 - [ ] Custom download filters (image/video only, min resolution)
@@ -264,8 +334,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built with [Dioxus](https://dioxuslabs.com/) - A React-like framework for Rust
-- Pixelfed API documentation and community
-- Mastodon API compatibility layer
+- Pixelfed, Mastodon, and Bluesky communities for their open APIs
+- ActivityPub and ATProto protocols for decentralized social networking
+- Mastodon API compatibility layer used by Pixelfed
 
 ## Support
 
@@ -274,7 +345,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Note**: This application is not affiliated with or endorsed by Pixelfed. It's an independent client built using the public Pixelfed API.
+**Note**: This application is not affiliated with or endorsed by Pixelfed, Mastodon, or Bluesky. It's an independent client built using their public APIs.
 
 ## Features
 
