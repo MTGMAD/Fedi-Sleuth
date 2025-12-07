@@ -52,6 +52,18 @@ body {
   line-height: 1.5;
 }
 
+p {
+  color: var(--text-primary);
+}
+
+span {
+  color: var(--text-primary);
+}
+
+small {
+  color: var(--text-secondary);
+}
+
 .app-container {
   height: 100vh;
   display: flex;
